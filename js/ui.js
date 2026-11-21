@@ -17,6 +17,8 @@ const ui = {
   runner: null,
   /* Mehr */
   moreView: null,
+  exerciseSearch: '',
+  exerciseGroup: 'all',
   /* Sonstiges */
   lastError: null
 };
@@ -229,12 +231,22 @@ function emptyBox(text) { return '<div class="list"><div class="empty">' + esc(t
 /* Übungs-Auswahlliste für Sheets */
 function exerciseListHtml(list, actName, extra) {
   if (!list.length) return '<div class="empty">Keine passenden Übungen</div>';
-  return '<div class="list">' + list.map(e =>
+  const muscleRank = { chest: 1, back: 2, shoulders: 3, arms: 4, legs: 5, abs: 6, cardio: 7 };
+  const sorted = list.slice().sort((a, b) => {
+    const ga = muscleRank[muscleGroupForExercise(a.id)] || 8;
+    const gb = muscleRank[muscleGroupForExercise(b.id)] || 8;
+    if (ga !== gb) return ga - gb;
+    return String(a.name || '').localeCompare(String(b.name || ''), 'de');
+  });
+  return '<div class="list">' + sorted.map(e =>
     '<button class="list-item" data-act="' + esc(actName) + '" data-id="' + esc(e.id) + '"' +
       (extra ? ' ' + extra : '') + '>' +
       '<div class="li-main">' +
         '<div class="li-name">' + esc(e.name) + '</div>' +
         '<div class="li-meta">' + esc(CATEGORIES[e.category] || e.category) +
+          ((store && store.gymId && store.exerciseVariants)
+            ? (() => { const variants = store.exerciseVariants.filter(v => v.gymId === store.gymId && v.exerciseId === e.id).map(v => v.name); return variants.length ? ' · Varianten: ' + esc(variants.join(', ')) : ''; })()
+            : '') +
           (e.isCustom ? ' · eigene Übung' : '') +
           (e.bodyweight ? ' · Körpergewicht' : '') + '</div>' +
       '</div>' +

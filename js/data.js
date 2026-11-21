@@ -32,6 +32,31 @@ const CARDIO_DISTANCES = [500, 1000, 2000, 5000];
 /* §8.4 „Arme" als eigene Zielgruppe */
 const ARM_CATEGORIES = ['biceps_c', 'biceps_i', 'triceps_c', 'triceps_i'];
 
+const MUSCLE_GROUP_FILTERS = [
+  { id: 'all', label: 'Alle' },
+  { id: 'chest', label: 'Brust' },
+  { id: 'back', label: 'Rücken' },
+  { id: 'shoulders', label: 'Schultern' },
+  { id: 'arms', label: 'Arme' },
+  { id: 'legs', label: 'Beine' },
+  { id: 'abs', label: 'Bauch' },
+  { id: 'cardio', label: 'Cardio' },
+  { id: 'compound', label: 'Compound' }
+];
+
+function muscleGroupForExercise(exerciseId) {
+  const ex = getExercise(exerciseId);
+  if (!ex) return null;
+  if (ex.category === 'cardio') return 'cardio';
+  if (ex.category === 'hpush') return 'chest';
+  if (ex.category === 'vpull' || ex.category === 'hpull') return 'back';
+  if (ex.category === 'vpush' || ex.category === 'side_delt' || ex.category === 'rear_delt') return 'shoulders';
+  if (ARM_CATEGORIES.indexOf(ex.category) !== -1) return 'arms';
+  if (LEG_CATEGORIES.indexOf(ex.category) !== -1) return 'legs';
+  if (ex.category === 'abs') return 'abs';
+  return null;
+}
+
 /* §4 Equipment-Modi */
 const EQUIPMENT_MODES = [
   { id: 'studio',     label: 'Gym' },

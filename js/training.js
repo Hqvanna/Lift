@@ -2,7 +2,53 @@
 'use strict';
 
 /* ---------- Tages-/Slot-Zugriff ---------- */
-function getDay(dayId) { return DAYS.find(d => d.id === dayId) || DAYS[0]; }
+function exerciseRepTarget(exerciseId) {
+  const saved = store.exerciseRepTargets[exerciseId];
+  if (saved && typeof saved.min === 'number' && typeof saved.max === 'number') return saved;
+  return null;
+}
+function setExerciseRepTarget(exerciseId, min, max) {
+  if (!isFinite(min) || !isFinite(max) || min < 1 || max < min) return false;
+  store.exerciseRepTargets[exerciseId] = { min: Math.round(min), max: Math.round(max) };
+  return true;
+}
+function lastExerciseVariantId(exerciseId, gymId) {
+  const key = (gymId || store.gymId) + ':' + exerciseId;
+  const id = store.activeExerciseVariants[key];
+  return (store.exerciseVariants || []).some(v => v.id === id && v.exerciseId === exerciseId && v.gymId === (gymId || store.gymId)) ? id : null;
+}
+function rememberExerciseVariant(exerciseId, gymId, variantId) {
+  const key = (gymId || store.gymId) + ':' + exerciseId;
+  if (variantId) store.activeExerciseVariants[key] = variantId;
+  else delete store.activeExerciseVariants[key];
+}
+function getDay(dayId) {
+  if (typeof dayId === 'string' && dayId.indexOf('plan_') === 0) {
+    const planId = dayId.slice(5);
+    const plan = (store && store.namedTrainingPlans || []).find(p => p.id === planId);
+    if (plan) return { id: dayId, name: plan.name, short: 'Plan', type: 'named', slots: [] };
+  }
+  const base = DAYS.find(d => d.id === dayId) || DAYS[0];
+  const custom = store && store.customFixedPlans ? store.customFixedPlans[dayId] : null;
+  if (!isObj(custom) || !Array.isArray(custom.slots)) return base;
+  return {
+    id: base.id,
+    name: typeof custom.name === 'string' && custom.name.trim() ? custom.name.trim() : base.name,
+    short: base.short,
+    type: base.type,
+    optional: base.optional,
+    slots: custom.slots.filter(isObj).map((slot, i) => ({
+      slotKey: typeof slot.slotKey === 'string' ? slot.slotKey : dayId + 's' + (i + 1),
+      name: typeof slot.name === 'string' ? slot.name : 'Übung ' + (i + 1),
+      category: CATEGORIES[slot.category] ? slot.category : 'abs',
+      sets: Math.min(12, Math.max(1, typeof slot.sets === 'number' ? parseInt(slot.sets, 10) : 3)),
+      reps: typeof slot.reps === 'string' ? slot.reps : '8–12',
+      rest: Math.min(600, Math.max(0, typeof slot.rest === 'number' ? parseInt(slot.rest, 10) : 90)),
+      def: isObj(slot.def) ? slot.def : { studio: slot.exerciseId, barbell: slot.exerciseId, bodyweight: slot.exerciseId },
+      exerciseId: typeof slot.exerciseId === 'string' ? slot.exerciseId : null
+    }))
+  };
+}
 function getDaySlotDef(dayId, slotKey) {
   const d = getDay(dayId);
   return d.slots.find(s => s.slotKey === slotKey) || null;
@@ -10,6 +56,7 @@ function getDaySlotDef(dayId, slotKey) {
 
 /* §5 Default-Übung eines Slots: Override → Equipment-Default, Pain-Flags respektieren (§14) */
 function resolveSlotExercise(dayId, slotDef, mode) {
+  if (slotDef.exerciseId && getExercise(slotDef.exerciseId) && !isPainFlagged(slotDef.exerciseId)) return slotDef.exerciseId;
   const ov = store.slotOverrides[dayId] && store.slotOverrides[dayId][slotDef.slotKey];
   if (ov && getExercise(ov) && !isPainFlagged(ov)) {
     const ex = getExercise(ov);
@@ -26,6 +73,8 @@ function resolveSlotExercise(dayId, slotDef, mode) {
 /* ---------- Session-Aufbau ---------- */
 function buildSlotFromDef(dayId, slotDef, mode) {
   const exId = resolveSlotExercise(dayId, slotDef, mode);
+  const repTarget = exerciseRepTarget(exId);
+  const targetReps = repTarget ? repTarget.min + '–' + repTarget.max : slotDef.reps;
   const last = lastWeightFor(exId, currentExerciseScope(exId));
   const sets = [];
   for (let i = 0; i < slotDef.sets; i++) {
@@ -34,11 +83,12 @@ function buildSlotFromDef(dayId, slotDef, mode) {
   return {
     slotKey: slotDef.slotKey,
     exerciseId: exId,
+    variantId: lastExerciseVariantId(exId, store.gymId),
     originalExerciseId: exId,
     category: slotDef.category,
     sets: sets,
     targetSets: slotDef.sets,
-    targetReps: slotDef.reps,
+    targetReps: targetReps,
     targetWeight: last,
     restSec: slotDef.rest,
     slotName: slotDef.name,
@@ -154,7 +204,9 @@ function startWildcardSession(mode, exIds, cfg) {
     const w = (preset && typeof preset.w === 'number') ? preset.w : last;
     const sets = [];
     for (let k = 0; k < 3; k++) sets.push({ w: w, r: 0, done: false });
+    const variantId = cfg && cfg.variantIds ? cfg.variantIds[exId] : null;
     return {
+      variantId: variantId || null,
       slotKey: 'dWs' + (i + 1),
       exerciseId: exId,
       originalExerciseId: exId,
@@ -216,7 +268,7 @@ function buildModeBSlots(exIds, cfg) {
   [[50, 5], [70, 3], [85, 1]].forEach(pair => {
     sets.push({
       w: ref !== null ? round25(ref * pair[0] / 100) : null,
-      r: 0, done: false, warmup: true, pct: pair[0], tr: pair[1], restSec: 60
+      r: 0, done: false, warmup: true, pct: pair[0], tr: pair[1], restSec: 240
     });
   });
   const attemptW = ref !== null ? (prKind === 'weight' ? round25(ref + 2.5) : ref) : null;
@@ -311,6 +363,10 @@ function currentSetIndex(slot) {
 /* ---------- Pausentimer (§5, §27 lautlos) ---------- */
 let restTimer = { slotKey: null, endsAt: 0, handle: null };
 
+function timerEndHaptic() {
+  try { if (navigator.vibrate) navigator.vibrate(180); } catch (e) { logError(e); }
+}
+
 function startRestTimer(slotKey, seconds) {
   clearRestTimer();
   restTimer.slotKey = slotKey;
@@ -319,7 +375,7 @@ function startRestTimer(slotKey, seconds) {
     const el = q('#rest-timer');
     const left = Math.ceil((restTimer.endsAt - Date.now()) / 1000);
     if (left <= 0) {
-      /* §27: verschwindet lautlos, ohne Ton/Vibration/Toast */
+      timerEndHaptic();
       clearRestTimer();
       if (el) el.textContent = '';
       return;
@@ -334,6 +390,22 @@ function clearRestTimer() {
 function restLeft() {
   if (!restTimer.slotKey) return 0;
   return Math.max(0, Math.ceil((restTimer.endsAt - Date.now()) / 1000));
+}
+
+function lastNoteForExercise(exerciseId, gymId) {
+  for (let i = store.sessions.length - 1; i >= 0; i--) {
+    const sess = store.sessions[i];
+    if (!sess || sess.gymId !== gymId) continue;
+    for (let j = (sess.slots || []).length - 1; j >= 0; j--) {
+      const slot = sess.slots[j];
+      if (!slot || slot.exerciseId !== exerciseId) continue;
+      for (let k = (slot.sets || []).length - 1; k >= 0; k--) {
+        const set = slot.sets[k];
+        if (set && typeof set.note === 'string' && set.note.trim()) return set.note.trim();
+      }
+    }
+  }
+  return null;
 }
 
 /* ---------- Satz bestätigen ---------- */
@@ -428,9 +500,9 @@ function offerRepFallback(sess, slot) {
   if (slot.prKind !== 'weight') return;
   const ref = slot.prRef;
   if (ref === null || ref === undefined) return;
-  const attempts = slot.sets.filter(s => s.attempt && s.done);
+  const attempts = slot.sets.filter(s => s.attempt && (s.done || s.skip === true));
   if (!attempts.length) return;
-  const success = attempts.some(s => typeof s.w === 'number' && s.w > ref && s.r >= 1);
+  const success = attempts.some(s => s.done && typeof s.w === 'number' && s.w > ref && s.r >= 1);
   if (success) return;
   toast('Versuch nicht geschafft', {
     level: 1, sticky: true,
@@ -470,30 +542,70 @@ onAct('set.reset', () => {
   render();
 });
 
-/* §11 / §25: nur textueller Hinweis, kein berechneter Vorschlagswert */
+/* §11: Verlaufvergleich bei gleichem Gewicht, über die letzten fünf relevanten Sessions.
+   Drei aufeinanderfolgende Session-Durchschnitte ohne Verbesserung lösen das Plateau aus. */
+function sessionAverageRepsAtWeight(exerciseId, weight) {
+  const sessionAverages = [];
+  const relevant = store.sessions.slice().reverse().slice(0, 5);
+  relevant.forEach(sess => {
+    const reps = [];
+    (sess.slots || []).forEach(slot => {
+      if (slot.exerciseId !== exerciseId || slot.skipped) return;
+      (slot.sets || []).filter(set =>
+        set.done && set.skip !== true && typeof set.r === 'number' && set.r > 0 &&
+        typeof set.w === 'number' && set.w === weight
+      ).forEach(set => reps.push(set.r));
+    });
+    if (reps.length) sessionAverages.push(reps.reduce((sum, rep) => sum + rep, 0) / reps.length);
+  });
+  if (sessionAverages.length < 3) return null;
+  return {
+    average: sessionAverages.reduce((sum, value) => sum + value, 0) / sessionAverages.length,
+    count: sessionAverages.length
+  };
+}
+
 function evaluateProgression(slot) {
-  const range = parseRepRange(slot.targetReps);
   const done = slot.sets.filter(s => s.done);
   if (!done.length) return;
-  const allTop = done.every(s => s.r >= range.max);
-  const anyBelow = done.some(s => s.r < range.min);
   const exId = slot.exerciseId;
+  const targetCount = typeof slot.targetSets === 'number' ? slot.targetSets : slot.sets.length;
+  const range = parseRepRange(slot.targetReps);
 
-  if (allTop) {
-    store.plateauStreak[exId] = 0;
-    slot._progressHint = 'up';
-    toast('Gewicht erhöhen', { level: 1, sub: exerciseName(exId) + ' — alle Sätze im oberen Rep-Bereich' });
-  } else if (anyBelow) {
+  const weights = {};
+  done.filter(s => typeof s.w === 'number' && s.w > 0).forEach(s => { weights[String(s.w)] = s.w; });
+  const compared = Object.keys(weights).map(k => {
+    const weight = weights[k];
+    const current = done.filter(s => s.w === weight && s.r > 0);
+    if (!current.length) return null;
+    const currentAverage = current.reduce((sum, s) => sum + s.r, 0) / current.length;
+    const previousAverage = sessionAverageRepsAtWeight(exId, weight);
+    return previousAverage === null ? null : { weight: weight, currentAverage: currentAverage, previousAverage: previousAverage.average, matchingSessions: previousAverage.count };
+  }).filter(Boolean);
+
+  if (!compared.length) {
+    if (done.length >= targetCount && done.every(s => s.r >= range.max)) {
+      store.plateauStreak[exId] = 0;
+      slot._progressHint = 'up';
+      toast('Gewicht erhöhen', { level: 1, sub: exerciseName(exId) + ' — alle Sätze im oberen Rep-Bereich' });
+    }
+    return;
+  }
+
+  const noImprovement = compared.every(c => c.currentAverage <= c.previousAverage);
+  if (noImprovement) {
     store.plateauStreak[exId] = (store.plateauStreak[exId] || 0) + 1;
     if (store.plateauStreak[exId] >= 3 && store.plateauMode[exId] !== 'dismissed') {
       store.plateauMode[exId] = 'watch';
-      toast('Plateau erkannt', {
-        level: 1, sticky: true,
-        sub: exerciseName(exId) + ' — 3 Sessions unter Ziel. Deload oder Übungswechsel?'
-      });
+      const details = compared.map(c => fmtKg(c.weight) + ': jetzt ' + fmtNum(c.currentAverage) + ' / ' + c.matchingSessions + ' Sessions vorher Ø ' + fmtNum(c.previousAverage) + ' Wdh.').join(' · ');
+      toast('Plateau erkannt', { level: 1, sticky: true, sub: exerciseName(exId) + ' — ' + details });
     }
   } else {
     store.plateauStreak[exId] = 0;
+  }
+
+  if (done.length >= targetCount && done.every(s => s.r >= range.max)) {
+    slot._progressHint = 'up';
   }
 }
 
@@ -515,6 +627,41 @@ onAct('set.r', (d, el) => {
   const v = parseInt(String(el.value).trim(), 10);
   set.r = isFinite(v) && v > 0 ? v : 0;
   saveStore();
+});
+ onAct('set.variant', (d, el) => {
+  const sess = store.activeSession; if (!sess) return;
+  const slot = sess.slots.find(s => s.slotKey === d.slot); if (!slot) return;
+  slot.variantId = String(el.value || '') || null;
+  rememberExerciseVariant(slot.exerciseId, sess.gymId, slot.variantId);
+  saveStore();
+  render();
+});
+ onAct('slot.variantAdd', d => {
+  const sess = store.activeSession; if (!sess) return;
+  const slot = sess.slots.find(s => s.slotKey === d.slot); if (!slot) return;
+  openSheet({
+    title: 'Variante hinzufügen',
+    sub: exerciseName(slot.exerciseId) + ' · ' + gymLabel(sess.gymId),
+    body: '<div class="stack">' +
+      '<div class="field-block"><label>Hersteller/Modell</label>' +
+        '<input class="input" id="slot-variant-name" placeholder="z. B. Life Fitness"></div>' +
+      '<button class="btn primary block" data-act="slot.variantSave" data-slot="' + esc(slot.slotKey) + '">Variante speichern</button>' +
+    '</div>'
+  });
+});
+ onAct('slot.variantSave', d => {
+  const sess = store.activeSession; if (!sess) return;
+  const slot = sess.slots.find(s => s.slotKey === d.slot); if (!slot) return;
+  const name = String((q('#slot-variant-name') || {}).value || '').trim();
+  if (!name) { toast('Bitte Hersteller oder Modell eingeben', { level: 0 }); return; }
+  const variant = { id: uid('ev'), gymId: sess.gymId, exerciseId: slot.exerciseId, name: name };
+  store.exerciseVariants.push(variant);
+  slot.variantId = variant.id;
+  rememberExerciseVariant(slot.exerciseId, sess.gymId, variant.id);
+  saveStore();
+  closeSheet();
+  render();
+  toast('Maschinenvariante gespeichert', { level: 2, sub: name });
 });
 /* ---------- Cardio-Eingaben ---------- */
 function cardioSetOf(d) {
@@ -625,6 +772,64 @@ onAct('day.select', d => {
   ui.selectedDay = d.day;
   render();
 });
+
+function customPlanForDay(dayId) {
+  const day = getDay(dayId);
+  const existing = store.customFixedPlans[dayId];
+  if (isObj(existing) && Array.isArray(existing.slots)) return existing;
+  return {
+    name: day.name,
+    slots: day.slots.map(sd => ({
+      slotKey: sd.slotKey,
+      name: sd.name,
+      category: sd.category,
+      sets: sd.sets,
+      reps: sd.reps,
+      rest: sd.rest,
+      exerciseId: resolveSlotExercise(dayId, sd, store.equipmentMode),
+      def: sd.def
+    }))
+  };
+}
+
+function renderDayEditor(dayId) {
+  const plan = customPlanForDay(dayId);
+  const body = '<div class="stack">' +
+    '<div class="field-block"><label>Name des Trainings</label>' +
+      '<input class="input" value="' + esc(plan.name || '') + '" data-change="day.planName" data-day="' + esc(dayId) + '"></div>' +
+    '<div class="list">' + plan.slots.map((slot, i) =>
+      '<div class="card pad-s"><div class="row-between"><div style="min-width:0"><div class="li-name">' + esc(exerciseName(slot.exerciseId)) + '</div>' +
+      '<div class="li-meta">' + esc(CATEGORIES[slot.category] || slot.category) + '</div></div>' +
+      '<button class="icon-btn sm" data-act="day.slotRemove" data-day="' + esc(dayId) + '" data-i="' + i + '" aria-label="Übung entfernen">✕</button></div>' +
+      '<div class="cardio-grid mt">' +
+      '<div class="field-block"><label>Sätze</label><input class="input" type="number" min="1" max="12" value="' + slot.sets + '" data-change="day.slotSets" data-day="' + esc(dayId) + '" data-i="' + i + '"></div>' +
+      '<div class="field-block"><label>Wdh.</label><input class="input" value="' + esc(slot.reps) + '" data-change="day.slotReps" data-day="' + esc(dayId) + '" data-i="' + i + '"></div>' +
+      '<div class="field-block"><label>Pause s</label><input class="input" type="number" min="0" max="600" value="' + slot.rest + '" data-change="day.slotRest" data-day="' + esc(dayId) + '" data-i="' + i + '"></div>' +
+      '</div></div>'
+    ).join('') + '</div>' +
+    '<button class="btn ghost block" data-act="day.slotAdd" data-day="' + esc(dayId) + '">+ Übung hinzufügen</button>' +
+    '<button class="btn primary block big" data-act="day.editSave" data-day="' + esc(dayId) + '">Training speichern</button>' +
+    '<button class="btn danger block" data-act="day.editReset" data-day="' + esc(dayId) + '">Auf Standard zurücksetzen</button>' +
+  '</div>';
+  openSheet({ title: 'Training bearbeiten', sub: (DAYS.find(d => d.id === dayId) || {}).name || '', body: body });
+}
+
+onAct('day.edit', d => renderDayEditor(d.day));
+ onAct('day.planName', (d, el) => { const plan = customPlanForDay(d.day); plan.name = String(el.value); store.customFixedPlans[d.day] = plan; saveStore(); });
+ onAct('day.slotSets', (d, el) => { const plan = customPlanForDay(d.day); const v = parseInt(el.value, 10); if (plan.slots[d.i]) plan.slots[d.i].sets = Math.min(12, Math.max(1, v || 1)); store.customFixedPlans[d.day] = plan; saveStore(); });
+ onAct('day.slotReps', (d, el) => { const plan = customPlanForDay(d.day); if (plan.slots[d.i]) {
+  const reps = String(el.value).trim() || '8–12';
+  plan.slots[d.i].reps = reps;
+  const range = parseRepRange(reps);
+  setExerciseRepTarget(plan.slots[d.i].exerciseId, range.min, range.max);
+ }
+ store.customFixedPlans[d.day] = plan; saveStore(); });
+ onAct('day.slotRest', (d, el) => { const plan = customPlanForDay(d.day); const v = parseInt(el.value, 10); if (plan.slots[d.i]) plan.slots[d.i].rest = Math.min(600, Math.max(0, v || 0)); store.customFixedPlans[d.day] = plan; saveStore(); });
+ onAct('day.slotRemove', d => { const plan = customPlanForDay(d.day); plan.slots.splice(parseInt(d.i, 10), 1); store.customFixedPlans[d.day] = plan; saveStore(); renderDayEditor(d.day); });
+ onAct('day.slotAdd', d => openSheet({ title: 'Übung hinzufügen', sub: 'Aus der gesamten Bibliothek', body: exerciseListHtml(allExercises().filter(e => !isPainFlagged(e.id)), 'day.slotPick', 'data-day="' + esc(d.day) + '"') }));
+ onAct('day.slotPick', d => { const ex = getExercise(d.id); if (!ex) return; const plan = customPlanForDay(d.day); plan.slots.push({ slotKey: d.day + 's' + uid('slot'), name: ex.name, category: ex.category, sets: 3, reps: '8–12', rest: 90, exerciseId: ex.id, def: { studio: ex.id, barbell: ex.id, bodyweight: ex.id } }); store.customFixedPlans[d.day] = plan; saveStore(); renderDayEditor(d.day); });
+ onAct('day.editSave', d => { saveStore(); closeSheet(); render(); toast('Training gespeichert', { level: 2, sub: customPlanForDay(d.day).name }); });
+ onAct('day.editReset', d => confirmSheet({ title: 'Training zurücksetzen', text: 'Die eigene Kopie dieses Tages wird entfernt.', okLabel: 'Zurücksetzen' }, () => { delete store.customFixedPlans[d.day]; saveStore(); closeSheet(); render(); }));
 onAct('equip.set', d => {           /* §20.1 Single-Tap */
   store.equipmentMode = d.mode;
   saveStore();
@@ -838,6 +1043,7 @@ function applySwap(sess, slot, newId) {
   if (!newId || newId === fromId) return;
   const ex = getExercise(newId); if (!ex) return;
   slot.exerciseId = newId;
+  slot.variantId = lastExerciseVariantId(newId, sess.gymId);
   const last = lastWeightFor(newId, sessionScope(sess));
   slot.targetWeight = last;
   slot.sets.forEach(s => { if (!s.done) s.w = last; });
@@ -972,8 +1178,22 @@ function renderPlSheet() {
 onAct('pl.toggleMain', d => {
   const i = ui._plMain.indexOf(d.id);
   if (i !== -1) ui._plMain.splice(i, 1);
-  else if (ui._plMain.length < 3) ui._plMain.push(d.id);
-  else { toast('Es sind bereits 3 Hauptübungen gewählt', { level: 0 }); return; }
+  else if (ui._plMain.length < 3) {
+    ui._plMain.push(d.id);
+    if (typeof store.powerlifting.tm[d.id] !== 'number') {
+      const scopes = prScopesForExercise(d.id);
+      let best = null;
+      scopes.forEach(sc => {
+        const pr = getPr(sc, d.id);
+        if (pr && typeof pr.best_1rm === 'number') best = best === null ? pr.best_1rm : Math.max(best, pr.best_1rm);
+        else if (pr && typeof pr.best_weight === 'number') best = best === null ? pr.best_weight : Math.max(best, pr.best_weight);
+      });
+      if (best !== null) {
+        store.powerlifting.tm[d.id] = round25(best * 0.9);
+        saveStore();
+      }
+    }
+  } else { toast('Es sind bereits 3 Hauptübungen gewählt', { level: 0 }); return; }
   renderPlSheet();
 });
 onAct('pl.from1rm', (d, el) => {
@@ -996,8 +1216,8 @@ onAct('pl.addAssist', () => {
   if (ui._plAssist.length >= 3) { toast('Maximal 3 Assistance-Übungen', { level: 0 }); return; }
   openSheet({
     title: 'Assistance wählen',
-    sub: 'Normale Doppelprogression',
-    body: exerciseListHtml(exercisesFor(null, store.equipmentMode), 'pl.pickAssist')
+    sub: 'Gesamte Übungsbibliothek',
+    body: exerciseListHtml(allExercises().filter(e => !isPainFlagged(e.id)), 'pl.pickAssist')
   });
 });
 onAct('pl.pickAssist', d => {
@@ -1041,7 +1261,8 @@ onAct('wc.open', d => {
   ui._wcSrc = 'all';
   ui._wcCat = 'all';
   ui._wcName = '';
-  ui._wcC = { type: 'amrap', durationSec: 600, intervalSec: 60, rounds: 10, order: 'rotate' };
+  ui._wcC = { type: 'amrap', durationSec: 600, intervalSec: 60, rounds: 4, order: 'rotate' };
+  ui._wcVariants = ui._wcVariants || {};
   ui._wcB = { prKind: 'weight', attempts: 3, targetW: null };
   renderWcPicker();
 });
@@ -1064,7 +1285,11 @@ function wcBaseList() {
 function filterWcList(list) {
   const c = ui._wcCat || 'all';
   if (c === 'all') return list;
+  if (c === 'compound') return list.filter(e => e.isCompound === true);
   if (c === 'arms') return list.filter(e => ARM_CATEGORIES.indexOf(e.category) !== -1);
+  if (MUSCLE_GROUP_FILTERS.some(g => g.id === c) && c !== 'compound') {
+    return list.filter(e => muscleGroupForExercise(e.id) === c);
+  }
   return list.filter(e => e.category === c);
 }
 function canStartWc() {
@@ -1092,10 +1317,9 @@ function renderWcPicker() {
       '<div class="chips">' + WC_SOURCES.map(s =>
         '<button class="chip ' + ((ui._wcSrc || 'all') === s.id ? 'on' : '') + '" data-act="wc.src" data-src="' + s.id + '">' +
         esc(s.label) + '</button>').join('') + '</div>' +
-      '<div class="chips">' + ['all'].concat(CATEGORY_ORDER).map(c =>
-        '<button class="chip ' + ((ui._wcCat || 'all') === c ? 'on' : '') + '" data-act="wc.cat" data-cat="' + c + '">' +
-        (c === 'all' ? 'Alle' : esc(CATEGORIES[c])) + '</button>').join('') +
-        '<button class="chip ' + (ui._wcCat === 'arms' ? 'on' : '') + '" data-act="wc.cat" data-cat="arms">Arme</button>' +
+      '<div class="chips">' + MUSCLE_GROUP_FILTERS.map(g =>
+        '<button class="chip ' + ((ui._wcCat || 'all') === g.id ? 'on' : '') + '" data-act="wc.cat" data-cat="' + g.id + '">' +
+        esc(g.label) + '</button>').join('') +
       '</div>' +
       '<p class="tiny muted">Zielgruppe „Arme": ' + esc(armGroup) + '</p>' +
       exerciseListHtml(filterWcList(wcBaseList()), 'wc.pick') +
@@ -1113,11 +1337,17 @@ function wcPicksHtml() {
     const p = wcPerEx(id);
     const cardio = isCardioExercise(id);
     const role = ui._wcMode === 'B' ? (i === 0 ? 'Hauptübung' : 'Nebenlift (optional)') : null;
+    const variants = (store.exerciseVariants || []).filter(v => v.gymId === store.gymId && v.exerciseId === id);
+    const selectedVariant = ui._wcVariants[id] || '';
     return '<div class="card pad-s">' +
       '<div class="row-between"><div style="min-width:0">' +
         '<div class="li-name">' + esc(exerciseName(id)) + '</div>' +
         '<div class="li-meta">' + esc(role || CATEGORIES[(getExercise(id) || {}).category] || '') + '</div>' +
       '</div><button class="icon-btn sm" data-act="wc.remove" data-i="' + i + '">✕</button></div>' +
+      (variants.length ? '<div class="field-block mt"><label>Maschinenvariante</label><select class="input" data-change="wc.variant" data-id="' + esc(id) + '">' +
+        '<option value=""' + (!selectedVariant ? ' selected' : '') + '>Standard / keine Angabe</option>' +
+        variants.map(v => '<option value="' + esc(v.id) + '"' + (selectedVariant === v.id ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') +
+        '</select></div>' : '') +
       ((withInputs && !cardio) ?
         '<div class="row mt" style="gap:8px">' +
           '<div class="field-block" style="flex:1"><label>Wdh.</label>' +
@@ -1314,7 +1544,7 @@ onAct('wc.tplLoad', d => {
       type: t.config.type === 'emom' ? 'emom' : 'amrap',
       durationSec: typeof t.config.durationSec === 'number' ? t.config.durationSec : 600,
       intervalSec: typeof t.config.intervalSec === 'number' ? t.config.intervalSec : 60,
-      rounds: typeof t.config.rounds === 'number' ? t.config.rounds : 10,
+      rounds: typeof t.config.rounds === 'number' ? t.config.rounds : 4,
       order: t.config.order === 'all' ? 'all' : 'rotate'
     };
   }
@@ -1352,6 +1582,8 @@ onAct('wc.pick', d => {
   if (ui._wcMode === 'B' && ui._wcPicks.length >= 2) { toast('Modus B: eine Hauptübung + ein Nebenlift', { level: 0 }); return; }
   if (ui._wcPicks.indexOf(d.id) === -1) {
     ui._wcPicks.push(d.id);
+    if (!ui._wcVariants) ui._wcVariants = {};
+    ui._wcVariants[d.id] = lastExerciseVariantId(d.id, store.gymId) || '';
     const p = wcPerEx(d.id);
     if (p.w === null) {
       const last = lastWeightFor(d.id, currentExerciseScope(d.id));
@@ -1361,6 +1593,10 @@ onAct('wc.pick', d => {
   renderWcPicker();
 });
 onAct('wc.remove', d => { ui._wcPicks.splice(parseInt(d.i, 10), 1); renderWcPicker(); });
+ onAct('wc.variant', (d, el) => {
+  ui._wcVariants[d.id] = String(el.value || '');
+  rememberExerciseVariant(d.id, store.gymId, ui._wcVariants[d.id] || null);
+});
 onAct('wc.start', () => {
   if (!canStartWc()) return;
   const mode = ui._wcMode, picks = ui._wcPicks.slice();
@@ -1387,7 +1623,7 @@ onAct('wc.start', () => {
     startWildcardSession('C', picks, cfg);
     return;
   }
-  startWildcardSession('A', picks, { perEx: perEx });
+  startWildcardSession('A', picks, { perEx: perEx, variantIds: ui._wcVariants || {} });
 });
 
 /* ---------- Modus C: Ablauf (AMRAP / EMOM) ---------- */
@@ -1546,10 +1782,13 @@ function emomSubline(mc) {
 function emomCurrentExercise(mc) {
   if (mc.order === 'all') return null;
   const n = Math.max(1, mc.exIds.length);
-  return mc.exIds[mc.doneIntervals % n];
+  const currentIndex = Math.floor(mcElapsed(mc) / mc.intervalSec);
+  const intervalIndex = Math.min(mc.doneIntervals, emomIntervalsTotal(mc) - 1);
+  return mc.exIds[((Math.max(currentIndex, intervalIndex)) % n)];
 }
 
 function finalizeModeC(sess) {
+  timerEndHaptic();
   const mc = sess.modeC;
   mc.elapsed = Math.min(mcElapsed(mc), mc.type === 'amrap' ? mc.durationSec : emomIntervalsTotal(mc) * mc.intervalSec);
   mc.running = false;
@@ -1735,6 +1974,7 @@ function renderDayPreview(day) {
     html += wcCard('B', 'Kraft & PR-Versuch', '1–2 schwere Compounds, Warm-up und PR-Versuch. Auch Wiederholungs-PRs werden gefeiert.');
     html += wcCard('C', 'Zeitbasiert (AMRAP / EMOM)', 'Dauer, Übungen und Zielreps. Ergebnisse zählen nicht in normale Kraft-PRs.');
   } else if (day.type === 'fixed') {
+    html += '<button class="btn ghost block mb" data-act="day.edit" data-day="' + esc(day.id) + '">Training bearbeiten</button>';
     html += kicker('Übungen') + '<div class="list">' + day.slots.map(sd => {
       const exId = resolveSlotExercise(day.id, sd, store.equipmentMode);
       const last = lastWeightFor(exId, currentScope());
@@ -1852,11 +2092,19 @@ function renderActiveSession(sess) {
     const rl = restLeft();
     const cardio = slot.isCardio === true;
 
+    const exerciseVariants = (store.exerciseVariants || []).filter(v => v.gymId === sess.gymId && v.exerciseId === slot.exerciseId);
     html += '<div class="active-card">' +
       '<div class="active-head">' +
         '<div style="flex:1;min-width:0">' +
           '<div class="active-name">' + esc(exerciseName(slot.exerciseId)) + '</div>' +
+          (sess.equipment === 'studio'
+            ? '<div class="field-block mt"><label>Maschinenvariante</label><select class="input" data-change="set.variant" data-slot="' + esc(slot.slotKey) + '">' +
+              '<option value=""' + (!slot.variantId ? ' selected' : '') + '>Standard / keine Angabe</option>' +
+              exerciseVariants.map(v => '<option value="' + esc(v.id) + '"' + (slot.variantId === v.id ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('') +
+              '</select><button class="btn sm ghost mt" data-act="slot.variantAdd" data-slot="' + esc(slot.slotKey) + '">+ Variante für diese Übung</button></div>'
+            : '') +
           '<div class="active-target">' + esc(slot.slotName || '') +
+          ' · Ziel <button class="btn sm ghost" data-act="target.edit" data-slot="' + esc(slot.slotKey) + '">' + esc(slot.targetReps) + ' Wdh.</button>' +
             (cardio ? ' · Dauer und Intensität eintragen'
                     : ' · ' + slot.targetSets + ' × ' + esc(slot.targetReps) + ' Wdh.') +
             (slot.isPowerliftingMain ? ' · 80 % TM' : '') + '</div>' +
@@ -1871,6 +2119,8 @@ function renderActiveSession(sess) {
       const label = s.warmup === true
         ? 'Aufwärmen' + (s.pct ? ' ' + s.pct + ' %' : '')
         : (s.attempt === true ? 'Versuch ' + (s.tr || (i + 1)) : null);
+      const pr = getPr(currentExerciseScope(slot.exerciseId), slot.exerciseId);
+      const prAtWeight = s.w && pr && pr.prByWeight ? pr.prByWeight[String(s.w)] : null;
       return '<div class="setrow ' + (isCur ? 'current' : '') +
         (s.skip === true ? ' skipped' : '') + (s.warmup === true ? ' warmup' : '') + '">' +
         '<span class="set-no">' + (label ? esc(label) : (i + 1)) + '</span>' +
@@ -1879,7 +2129,7 @@ function renderActiveSession(sess) {
           'value="' + (s.w === null || s.w === undefined ? '' : s.w) + '" ' +
           (s.done ? 'disabled ' : '') + 'data-input="set.w" data-slot="' + esc(slot.slotKey) + '" data-i="' + i + '"></div>' +
         '<div class="field">' + (i === 0 ? '<div class="field-label">Wdh.</div>' : '') +
-          '<input class="num" type="number" inputmode="numeric" min="1" placeholder="Wdh." ' +
+          '<input class="num" type="number" inputmode="numeric" min="1" placeholder="' + esc(prAtWeight ? String(prAtWeight) : 'Wdh.') + '" ' +
           'value="' + (s.r ? s.r : '') + '" ' +
           (s.done ? 'disabled ' : '') + 'data-input="set.r" data-slot="' + esc(slot.slotKey) + '" data-i="' + i + '"></div>' +
         '<span class="statusdot ' + (s.done ? 'done' : '') + '">' +
@@ -1898,12 +2148,14 @@ function renderActiveSession(sess) {
       html += '<div class="hint">Gewicht erhöhen — bisherige Sätze im oberen Rep-Bereich.</div>';
     }
     if ((store.plateauStreak[slot.exerciseId] || 0) >= 3 && store.plateauMode[slot.exerciseId] !== 'dismissed') {
-      html += '<div class="hint">Plateau: 3 Sessions unter Ziel — Deload oder Übungswechsel erwägen. ' +
+      html += '<div class="hint">Plateau: Keine Verbesserung in 3 aufeinanderfolgenden Sessions — Vergleich mit mindestens 3 der letzten 5 Sessions bei gleichem Gewicht. ' +
         '<button class="btn sm ghost" style="margin-left:6px" data-act="plateau.dismiss" data-id="' + esc(slot.exerciseId) + '">Ignorieren</button></div>';
     }
 
-    html += '<textarea class="note" placeholder="Notiz zum aktuellen Satz (optional)" data-input="set.note" data-slot="' +
-      esc(slot.slotKey) + '">' + esc((slot.sets[Math.max(0, ki)] || {}).note || '') + '</textarea>';
+    const currentSet = slot.sets[Math.max(0, ki)] || {};
+    const previousNote = currentSet.note ? null : lastNoteForExercise(slot.exerciseId, sess.gymId);
+    html += '<textarea class="note" placeholder="' + esc(previousNote || 'Notiz zum aktuellen Satz (optional)') + '" data-input="set.note" data-slot="' +
+      esc(slot.slotKey) + '">' + esc(currentSet.note || '') + '</textarea>';
 
     html += '<div class="row mt">' +
       '<button class="btn primary big" style="flex:1" data-act="set.confirm">Satz bestätigen</button>' +
@@ -1944,11 +2196,64 @@ function renderActiveSession(sess) {
     html += '<button class="btn ghost block" data-act="cardio.add">+ Cardio hinzufügen (optional)</button>';
   }
 
+  html += '<button class="btn ghost block" data-act="session.savePlan">Aktuelles Training speichern</button>';
   html += '<button class="btn ghost block" data-act="session.finish">Einheit beenden</button>';
   html += '<button class="btn danger block" data-act="session.discard">Einheit verwerfen</button>';
   html += '</div>';
   return html;
 }
+
+onAct('session.savePlan', () => {
+  const sess = store.activeSession; if (!sess) return;
+  openSheet({
+    title: 'Training speichern', sub: 'Als benannten Plan',
+    body: '<div class="stack"><div class="field-block"><label>Planname</label><input class="input" id="save-plan-name" value="' + esc(sess.name || getDay(sess.dayId).name || '') + '"></div>' +
+      '<button class="btn primary block" data-act="session.savePlanConfirm">Speichern</button></div>'
+  });
+});
+ onAct('session.savePlanConfirm', () => {
+  const sess = store.activeSession; if (!sess) return;
+  const name = String((q('#save-plan-name') || {}).value || '').trim();
+  if (!name) { toast('Bitte einen Namen eingeben', { level: 0 }); return; }
+  const slots = sess.slots.filter(sl => !sl.skipped).map(sl => ({
+    slotKey: 'plan_' + uid('s'), exerciseId: sl.exerciseId, name: sl.slotName || exerciseName(sl.exerciseId),
+    category: sl.category, sets: sl.targetSets || sl.sets.length || 3, reps: sl.targetReps || '8–12', rest: sl.restSec || 90
+  }));
+  if (!slots.length) { toast('Keine Übungen zum Speichern', { level: 0 }); return; }
+  store.namedTrainingPlans.push({ id: uid('plan'), name: name, slots: slots, updatedAt: nowTs() });
+  saveStore(); closeSheet(); toast('Training gespeichert', { level: 2, sub: name });
+});
+
+onAct('target.edit', d => {
+  const sess = store.activeSession; if (!sess) return;
+  const slot = sess.slots.find(s => s.slotKey === d.slot); if (!slot) return;
+  const range = exerciseRepTarget(slot.exerciseId) || parseRepRange(slot.targetReps);
+  openSheet({
+    title: 'Wiederholungsziel',
+    sub: exerciseName(slot.exerciseId),
+    body: '<div class="stack">' +
+      '<div class="cardio-grid">' +
+        '<div class="field-block"><label>Mindest-Wdh.</label><input class="input" type="number" min="1" id="target-min" value="' + range.min + '"></div>' +
+        '<div class="field-block"><label>Maximal-Wdh.</label><input class="input" type="number" min="1" id="target-max" value="' + range.max + '"></div>' +
+      '</div>' +
+      '<button class="btn primary block" data-act="target.save" data-slot="' + esc(slot.slotKey) + '">Ziel speichern</button>' +
+    '</div>'
+  });
+});
+ onAct('target.save', d => {
+  const sess = store.activeSession; if (!sess) return;
+  const slot = sess.slots.find(s => s.slotKey === d.slot); if (!slot) return;
+  const min = parseInt(String((q('#target-min') || {}).value || ''), 10);
+  const max = parseInt(String((q('#target-max') || {}).value || ''), 10);
+  if (!setExerciseRepTarget(slot.exerciseId, min, max)) { toast('Bitte ein gültiges Ziel eingeben', { level: 0 }); return; }
+  slot.targetReps = min + '–' + max;
+  store.plateauStreak[slot.exerciseId] = 0;
+  store.plateauMode[slot.exerciseId] = null;
+  saveStore();
+  closeSheet();
+  render();
+  toast('Wiederholungsziel gespeichert', { level: 2, sub: min + '–' + max + ' Wdh.' });
+});
 
 onAct('plateau.dismiss', d => {
   store.plateauMode[d.id] = 'dismissed';

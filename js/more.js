@@ -6,6 +6,8 @@ function renderMore() {
   if (ui.moreView === 'pain')   return renderPainFilter();
   if (ui.moreView === 'custom') return renderCustomExercises();
   if (ui.moreView === 'data')   return renderData();
+  if (ui.moreView === 'plans')  return renderNamedPlans();
+  if (ui.moreView === 'directory') return renderExerciseDirectory();
 
   let html = kicker('Mehr') + screenTitle('Mehr');
   html += '<div class="stack">';
@@ -27,6 +29,8 @@ function renderMore() {
 
   html += '<div class="list">' +
     navItem('gyms', 'Gyms', gymLabel(store.gymId) + ' aktiv · ' + allGyms().length + ' verfügbar') +
+    navItem('plans', 'Trainingspläne', store.namedTrainingPlans.length + ' eigene Pläne') +
+    navItem('directory', 'Übungsverzeichnis', allExercises().length + ' Übungen') +
     navItem('pain', 'Verletzungs-Filter', activePainCount() + ' aktive Filter') +
     navItem('custom', 'Eigene Übungen', store.customExercises.length + ' angelegt') +
     navItem('data', 'Daten', 'Import / Export · ' + store.sessions.length + ' Einheiten') +
@@ -78,6 +82,63 @@ onAct('app.update', () => {
 
 onAct('more.open', d => { ui.moreView = d.view; window.scrollTo(0, 0); render(); });
 onAct('more.back', () => { ui.moreView = null; render(); });
+
+function renderNamedPlans() {
+  let html = subHeader('Trainingspläne') + '<div class="stack">';
+  if (!store.namedTrainingPlans.length) html += '<div class="empty">Noch keine eigenen Trainingspläne.</div>';
+  html += '<div class="list">' + store.namedTrainingPlans.map(p =>
+    '<div class="list-item"><div class="li-main"><div class="li-name">' + esc(p.name) + '</div>' +
+      '<div class="li-meta">' + p.slots.length + ' Übungen</div></div>' +
+      '<button class="badge" data-act="plan.load" data-id="' + esc(p.id) + '">Laden</button>' +
+      '<button class="badge" data-act="plan.delete" data-id="' + esc(p.id) + '">Löschen</button></div>'
+  ).join('') + '</div>';
+  html += '<button class="btn primary block big" data-act="plan.create">+ Eigenen Plan erstellen</button></div>';
+  return html;
+}
+
+onAct('plan.create', () => {
+  openSheet({
+    title: 'Neuen Plan erstellen', sub: 'Eine leere benannte Zusammenstellung',
+    body: '<div class="stack"><div class="field-block"><label>Name</label>' +
+      '<input class="input" id="plan-name" placeholder="z. B. Push Zuhause"></div>' +
+      '<button class="btn primary block" data-act="plan.addFirst">Plan erstellen</button></div>'
+  });
+});
+onAct('plan.addFirst', () => {
+  const name = String((q('#plan-name') || {}).value || '').trim();
+  if (!name) { toast('Bitte einen Namen eingeben', { level: 0 }); return; }
+  store.namedTrainingPlans.push({ id: uid('plan'), name: name, slots: [], updatedAt: nowTs() });
+  saveStore(); closeSheet(); render();
+  openPlanEditor(store.namedTrainingPlans[store.namedTrainingPlans.length - 1].id);
+});
+
+function openPlanEditor(planId) {
+  const plan = store.namedTrainingPlans.find(p => p.id === planId); if (!plan) return;
+  const body = '<div class="stack"><div class="field-block"><label>Planname</label>' +
+    '<input class="input" value="' + esc(plan.name) + '" data-change="plan.rename" data-id="' + esc(plan.id) + '"></div>' +
+    '<div class="list">' + plan.slots.map((slot, i) =>
+      '<div class="card pad-s"><div class="li-name">' + esc(exerciseName(slot.exerciseId)) + '</div>' +
+      '<div class="cardio-grid mt"><div class="field-block"><label>Sätze</label><input class="input" type="number" min="1" max="12" value="' + slot.sets + '" data-change="plan.slotSets" data-id="' + esc(plan.id) + '" data-i="' + i + '"></div>' +
+      '<div class="field-block"><label>Wdh.</label><input class="input" value="' + esc(slot.reps) + '" data-change="plan.slotReps" data-id="' + esc(plan.id) + '" data-i="' + i + '"></div>' +
+      '<div class="field-block"><label>Pause s</label><input class="input" type="number" min="0" max="600" value="' + slot.rest + '" data-change="plan.slotRest" data-id="' + esc(plan.id) + '" data-i="' + i + '"></div></div></div>'
+    ).join('') + '</div>' +
+    '<button class="btn ghost block" data-act="plan.addExercise" data-id="' + esc(plan.id) + '">+ Übung hinzufügen</button>' +
+    '<button class="btn primary block big" data-act="plan.start" data-id="' + esc(plan.id) + '">Plan laden</button></div>';
+  openSheet({ title: 'Trainingsplan', sub: plan.name, body: body });
+}
+ onAct('plan.load', d => openPlanEditor(d.id));
+ onAct('plan.rename', (d, el) => { const p = store.namedTrainingPlans.find(x => x.id === d.id); if (p) { p.name = String(el.value).trim() || p.name; p.updatedAt = nowTs(); saveStore(); } });
+ onAct('plan.slotSets', (d, el) => { const p = store.namedTrainingPlans.find(x => x.id === d.id); if (p && p.slots[d.i]) p.slots[d.i].sets = Math.min(12, Math.max(1, parseInt(el.value, 10) || 1)); saveStore(); });
+ onAct('plan.slotReps', (d, el) => { const p = store.namedTrainingPlans.find(x => x.id === d.id); if (p && p.slots[d.i]) p.slots[d.i].reps = String(el.value).trim() || '8–12'; saveStore(); });
+ onAct('plan.slotRest', (d, el) => { const p = store.namedTrainingPlans.find(x => x.id === d.id); if (p && p.slots[d.i]) p.slots[d.i].rest = Math.min(600, Math.max(0, parseInt(el.value, 10) || 0)); saveStore(); });
+ onAct('plan.addExercise', d => openSheet({ title: 'Übung auswählen', sub: 'Zum benannten Plan', body: exerciseListHtml(allExercises().filter(e => !isPainFlagged(e.id)), 'plan.pickExercise', 'data-plan="' + esc(d.id) + '"') }));
+ onAct('plan.pickExercise', d => { const p = store.namedTrainingPlans.find(x => x.id === d.plan); const ex = getExercise(d.id); if (!p || !ex) return; p.slots.push({ slotKey: 'plan_' + uid('s'), exerciseId: ex.id, name: ex.name, category: ex.category, sets: 3, reps: '8–12', rest: 90 }); p.updatedAt = nowTs(); saveStore(); openPlanEditor(p.id); });
+ onAct('plan.start', d => {
+  const p = store.namedTrainingPlans.find(x => x.id === d.id); if (!p) return;
+  const sess = { id: uid('s'), dayId: 'plan_' + p.id, dateISO: todayISO(), gymId: store.gymId, equipment: store.equipmentMode, mode: null, name: p.name, slots: p.slots.map((slot, i) => { const exId = slot.exerciseId; const ex = getExercise(exId); const last = lastWeightFor(exId, currentExerciseScope(exId)); const sets = []; for (let k = 0; k < slot.sets; k++) sets.push({ w: last, r: 0, done: false }); return { slotKey: 'named_s' + (i + 1), exerciseId: exId, originalExerciseId: exId, variantId: lastExerciseVariantId(exId, store.gymId), category: ex ? ex.category : slot.category, sets: sets, targetSets: slot.sets, targetReps: slot.reps, targetWeight: last, restSec: slot.rest, slotName: slot.name, isPowerliftingMain: false, skipped: false }; }), finished: false, finishedEarly: false };
+  store.activeSession = sess; saveStore(); closeSheet(); ui.moreView = null; ui.tab = 'training'; render();
+});
+ onAct('plan.delete', d => confirmSheet({ title: 'Plan löschen', text: 'Dieser benannte Trainingsplan wird entfernt.', okLabel: 'Plan löschen' }, () => { store.namedTrainingPlans = store.namedTrainingPlans.filter(p => p.id !== d.id); saveStore(); render(); }));
 onAct('set.bodyweight', (d, el) => {
   const v = parseFloat(String(el.value).replace(',', '.'));
   if (isFinite(v) && v > 0) { store.bodyweightKg = v; saveStore(); }
@@ -100,12 +161,11 @@ function renderGyms() {
       '<span class="statusdot ' + (store.gymId === g.id ? 'done' : '') + '">' + (store.gymId === g.id ? '✓' : '') + '</span>' +
       '<div class="li-main"><div class="li-name">' + esc(g.label) + '</div>' +
       '<div class="li-meta">' + prCountForGym(g.id) + ' PRs</div></div>' +
-      (BUILTIN_GYMS.some(b => b.id === g.id) ? '' :
-        '<span class="badge" data-act="gym.remove" data-id="' + esc(g.id) + '">entfernen</span>') +
     '</button>').join('') + '</div>';
   html += '<div class="card"><div class="field-block"><label>Neues Gym</label>' +
     '<input class="input" id="gym-new" placeholder="Name des Studios"></div>' +
     '<button class="btn primary block mt" data-act="gym.add">Gym hinzufügen</button></div>';
+  html += '<button class="btn ghost block big" data-act="gym.variants">Maschinenvarianten verwalten</button>';
   html += '</div>';
   return html;
 }
@@ -127,18 +187,57 @@ onAct('gym.add', () => {
   render();
   toast('Gym hinzugefügt', { level: 2, sub: label });
 });
-onAct('gym.remove', d => {
-  confirmSheet({
-    title: 'Gym entfernen',
-    text: 'PRs und Historie dieses Gyms bleiben in den Daten erhalten, das Gym ist aber nicht mehr auswählbar.',
-    okLabel: 'Entfernen'
-  }, () => {
-    store.customGyms = store.customGyms.filter(g => g.id !== d.id);
-    if (store.gymId === d.id) store.gymId = BUILTIN_GYMS[0].id;
-    saveStore();
-    render();
-  });
+onAct('gym.variants', () => {
+  renderGymVariantSheet();
 });
+
+function gymVariants(exerciseId) {
+  return store.exerciseVariants.filter(v => v.gymId === store.gymId && v.exerciseId === exerciseId);
+}
+function activeGymVariant(exerciseId) {
+  const key = store.gymId + ':' + exerciseId;
+  const id = store.activeExerciseVariants[key];
+  return store.exerciseVariants.find(v => v.id === id && v.gymId === store.gymId && v.exerciseId === exerciseId) || null;
+}
+function renderGymVariantSheet() {
+  const list = allExercises().filter(e => e.equipment && e.equipment.indexOf('studio') !== -1 && !isPainFlagged(e.id));
+  const variants = store.exerciseVariants.filter(v => v.gymId === store.gymId);
+  openSheet({
+    title: 'Maschinenvarianten',
+    sub: gymLabel(store.gymId),
+    body: '<div class="stack">' +
+      '<div class="field-block"><label>Stammübung auswählen</label>' +
+        '<select class="input" id="ev-exercise">' + list.map(e =>
+          '<option value="' + esc(e.id) + '">' + esc(e.name) + '</option>').join('') + '</select></div>' +
+      '<div class="field-block"><label>Hersteller/Modell</label>' +
+        '<input class="input" id="ev-name" placeholder="z. B. Life Fitness"></div>' +
+      '<button class="btn primary block" data-act="gym.variantAdd">Variante hinzufügen</button>' +
+      (variants.length
+        ? '<div class="list">' + variants.map(v =>
+          '<div class="list-item"><div class="li-main"><div class="li-name">' + esc(exerciseName(v.exerciseId)) + '</div>' +
+          '<div class="li-meta">' + esc(v.name) + '</div></div>' +
+          '<button class="badge" data-act="gym.variantRemove" data-id="' + esc(v.id) + '">entfernen</button></div>').join('') + '</div>'
+        : '<div class="empty">Noch keine Varianten für dieses Gym</div>') +
+    '</div>'
+  });
+}
+ onAct('gym.variantAdd', () => {
+  const exerciseId = String((q('#ev-exercise') || {}).value || '');
+  const name = String((q('#ev-name') || {}).value || '').trim();
+  if (!exerciseId || !name) { toast('Übung und Modell angeben', { level: 0 }); return; }
+  store.exerciseVariants.push({ id: uid('ev'), gymId: store.gymId, exerciseId: exerciseId, name: name });
+  saveStore();
+  renderGymVariantSheet();
+  toast('Maschinenvariante gespeichert', { level: 2, sub: name });
+});
+ onAct('gym.variantRemove', d => {
+  store.exerciseVariants = store.exerciseVariants.filter(v => v.id !== d.id);
+  Object.keys(store.activeExerciseVariants).forEach(k => { if (store.activeExerciseVariants[k] === d.id) delete store.activeExerciseVariants[k]; });
+  saveStore();
+  renderGymVariantSheet();
+});
+
+
 
 /* ---------- Verletzungs-Filter (§14, §30, §32.9) ---------- */
 function activePainCount() {
@@ -271,6 +370,44 @@ onAct('custom.save', () => {
   render();
   toast('Übung angelegt', { level: 2, sub: name + ' · ' + CATEGORIES[ex.category] });
 });
+function renderExerciseDirectory() {
+  let html = subHeader('Übungsverzeichnis') + '<div class="stack">';
+  html += '<div class="field-block"><label>Suche</label><input class="input" id="exercise-search" placeholder="Übung oder Muskelgruppe" value="' + esc(ui.exerciseSearch || '') + '" data-input="exercise.search"></div>';
+  html += '<div class="chips">' + MUSCLE_GROUP_FILTERS.map(g =>
+    '<button class="chip ' + ((ui.exerciseGroup || 'all') === g.id ? 'on' : '') + '" data-act="exercise.filter" data-group="' + g.id + '">' + esc(g.label) + '</button>').join('') + '</div>';
+  let list = allExercises().filter(e => !isPainFlagged(e.id));
+  const term = String(ui.exerciseSearch || '').trim().toLowerCase();
+  if (term) list = list.filter(e => (exerciseName(e.id) + ' ' + CATEGORIES[e.category] + ' ' + (e.subcategory || '')).toLowerCase().indexOf(term) !== -1);
+  if (ui.exerciseGroup === 'compound') list = list.filter(e => e.isCompound === true);
+  else if (ui.exerciseGroup && ui.exerciseGroup !== 'all') list = list.filter(e => muscleGroupForExercise(e.id) === ui.exerciseGroup);
+  list.sort((a, b) => String(a.name).localeCompare(String(b.name), 'de'));
+  html += '<div class="list">' + list.map(e => {
+    const variants = (store.exerciseVariants || []).filter(v => v.gymId === store.gymId && v.exerciseId === e.id).map(v => v.name);
+    return '<div class="list-item"><div class="li-main"><div class="li-name">' + esc(e.name) + '</div>' +
+      '<div class="li-meta">' + esc(CATEGORIES[e.category] || e.category) +
+      (e.isCompound ? ' · Compound' : ' · Isolation') +
+      (variants.length ? ' · Varianten: ' + esc(variants.join(', ')) : '') + '</div></div>' +
+      (e.equipment && e.equipment.indexOf('studio') !== -1 ? '<button class="badge" data-act="exercise.variantOpen" data-id="' + esc(e.id) + '">Variante</button>' : '') +
+    '</div>';
+  }).join('') + '</div></div>';
+  return html;
+}
+ onAct('exercise.search', (d, el) => { ui.exerciseSearch = String(el.value || ''); render(); });
+ onAct('exercise.filter', d => { ui.exerciseGroup = d.group; render(); });
+ onAct('exercise.variantOpen', d => {
+  openSheet({ title: 'Maschinenvariante', sub: exerciseName(d.id) + ' · ' + gymLabel(store.gymId), body:
+    '<div class="stack"><div class="field-block"><label>Hersteller/Modell</label><input class="input" id="directory-variant-name" placeholder="z. B. Life Fitness"></div>' +
+    '<button class="btn primary block" data-act="exercise.variantSave" data-id="' + esc(d.id) + '">Variante speichern</button></div>'
+  });
+});
+ onAct('exercise.variantSave', d => {
+  const name = String((q('#directory-variant-name') || {}).value || '').trim();
+  if (!name) { toast('Bitte Hersteller oder Modell eingeben', { level: 0 }); return; }
+  store.exerciseVariants.push({ id: uid('ev'), gymId: store.gymId, exerciseId: d.id, name: name });
+  rememberExerciseVariant(d.id, store.gymId, store.exerciseVariants[store.exerciseVariants.length - 1].id);
+  saveStore(); closeSheet(); render(); toast('Variante gespeichert', { level: 2, sub: name });
+});
+
 onAct('custom.remove', d => {
   confirmSheet({
     title: 'Übung entfernen',
@@ -300,9 +437,12 @@ function renderData() {
     '<input type="file" accept="application/json,.json" id="import-file" style="display:none" data-change="data.importFile">' +
     '<button class="btn ghost block mt" data-act="data.importOpen">Datei auswählen</button></div>';
 
-  html += '<div class="card"><div class="kicker">Zurücksetzen</div>' +
-    '<div class="card-sub" style="margin-top:6px">Löscht alle lokalen Daten unwiderruflich.</div>' +
-    '<button class="btn danger block mt" data-act="data.wipe">Alle Daten löschen</button></div>';
+  html += '<div class="card"><div class="kicker">Gezielt löschen</div>' +
+    '<div class="card-sub" style="margin-top:6px">Vor dem Löschen bleibt ein lokales JSON-Backup möglich.</div>' +
+    '<button class="btn ghost block mt" data-act="data.deleteHistory">Einheitenhistorie löschen</button>' +
+    '<button class="btn ghost block mt" data-act="data.deletePrs">Alle PR-Daten löschen</button>' +
+    '<button class="btn ghost block mt" data-act="data.deletePlans">Alle Trainingsvorlagen löschen</button>' +
+    '<button class="btn ghost block mt" data-act="data.deleteConditioning">AMRAP-/EMOM-Rekorde löschen</button></div>';
   html += '</div>';
   return html;
 }
@@ -380,17 +520,22 @@ function applyImport(parsed) {
   }
 }
 
-onAct('data.wipe', () => {
-  confirmSheet({
-    title: 'Alle Daten löschen',
-    text: 'Sessions, PRs, Einstellungen und eigene Übungen werden unwiderruflich entfernt.',
-    okLabel: 'Endgültig löschen'
-  }, () => {
-    try { localStorage.removeItem(STORE_KEY); } catch (e) { logError(e); }
-    store = migrateStore({});
-    saveStore();
-    ui.moreView = null;
-    render();
-    toast('Alle Daten gelöscht', { level: 2 });
+function backupBeforeScopedDelete(title, text, action) {
+  confirmSheet({ title: title, text: text + ' Vor dem Löschen wird das Export-Backup erzeugt.', okLabel: 'Backup & Löschen' }, () => {
+    try {
+      const blob = new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'lift-sicherungsbackup-' + todayISO() + '.json';
+      document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+    } catch (e) { logError(e); }
+    action(); saveStore(); render(); toast('Bereich gelöscht', { level: 2 });
   });
-});
+}
+ onAct('data.deleteHistory', () => backupBeforeScopedDelete('Einheitenhistorie löschen', 'Alle abgeschlossenen und aktiven Einheiten werden entfernt.', () => {
+  store.sessions = []; store.activeSession = null; store.counters.completedSets = 0; store.counters.workoutsCompleted = 0;
+}));
+ onAct('data.deletePrs', () => backupBeforeScopedDelete('PR-Daten löschen', 'Alle Kraft-, Cardio- und Wiederholungs-PRs werden entfernt.', () => { store.prs = {}; }));
+ onAct('data.deletePlans', () => backupBeforeScopedDelete('Trainingsvorlagen löschen', 'Eigene Trainingspläne, D1-D5-Kopien und Wildcard-Vorlagen werden entfernt.', () => {
+  store.namedTrainingPlans = []; store.customFixedPlans = {}; store.wildcardTemplates = [];
+}));
+ onAct('data.deleteConditioning', () => backupBeforeScopedDelete('Konditionsrekorde löschen', 'AMRAP-/EMOM-Rekorde werden entfernt. Einheitenhistorie bleibt erhalten.', () => { store.conditioningRecords = {}; }));
