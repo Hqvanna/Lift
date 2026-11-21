@@ -3,14 +3,15 @@
    Cache-Name versioniert; skipWaiting() + clients.claim() sofort. */
 'use strict';
 
-const CACHE = 'lift-cache-v10';
-const BUILD = '8';
+const CACHE = 'lift-cache-v11';
+const BUILD = '9';
 
 const PRECACHE = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/style.css?v=' + BUILD,
+  './js/analysis.js?v=' + BUILD,
   './js/data.js?v=' + BUILD,
   './js/store.js?v=' + BUILD,
   './js/ui.js?v=' + BUILD,

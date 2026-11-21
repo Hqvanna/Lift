@@ -65,10 +65,10 @@ function renderProgress() {
       return '<div class="list-item"><div class="li-main">' +
         '<div class="li-name">' + esc(n) + '</div>' +
         '<div class="li-meta">' + esc(r.type === 'emom' ? 'EMOM' : 'AMRAP') +
-          (r.lastDateISO ? ' · letzte Einheit ' + esc(fmtDateDE(r.lastDateISO)) : '') +
           ' · ' + (r.attempts || 0) + '× gemacht</div>' +
       '</div><div class="li-right">' + (r.bestRounds || 0) + ' Runden' +
-        (r.bestPartial ? '<br><span class="tiny">+ ' + r.bestPartial + '</span>' : '') + '</div></div>';
+        (r.bestPartial ? '<br><span class="tiny">+ ' + r.bestPartial + '</span>' : '') + '</div>' +
+        '<button class="icon-btn sm" data-act="conditioning.delete" data-name="' + esc(n) + '" title="Rundenrekord löschen" aria-label="Rundenrekord löschen">✕</button></div>';
     }).join('') + '</div>';
   }
 
@@ -84,6 +84,14 @@ onAct('pr.filter', d => { ui.prFilter = d.cat; render(); });
 onAct('pr.scope', d => { ui.prScope = d.s; render(); });
 /* Reiner Anzeigefilter — store.gymId bleibt unverändert */
 onAct('pr.gym', d => { ui.prGym = d.id; render(); });
+ onAct('conditioning.delete', d => {
+  const name = d.name;
+  confirmSheet({ title: 'Rundenrekord löschen', text: 'Der Rekord für „' + name + '" wird gelöscht. Die bisherigen Einheiten bleiben erhalten.', okLabel: 'Löschen' }, () => {
+    delete store.conditioningRecords[name];
+    saveStore();
+    render();
+  });
+});
 
 const PR_TABS = [
   { id: 'all', label: 'Alle' },
@@ -287,10 +295,25 @@ onAct('session.detail', d => {
   if (!s) return;
   const day = getDay(s.dayId);
   openSheet({
-    title: day.name + ' · ' + fmtDateDE(s.dateISO),
-    sub: gymLabel(s.gymId) + ' · ' + (EQUIPMENT_MODES.find(m => m.id === s.equipment) || {}).label +
-      (s.finishedEarly ? ' · vorzeitig beendet' : ''),
-    body: '<div class="list">' + s.slots.map(sl => {
+    title: s.mode === 'C' && s.modeC ? (s.modeC.name || (s.modeC.type === 'emom' ? 'EMOM' : 'AMRAP')) : day.name + ' · ' + fmtDateDE(s.dateISO),
+    sub: s.mode === 'C'
+      ? ((s.modeC.type === 'emom' ? 'EMOM' : 'AMRAP') + ' · ' + (s.modeC.completedRounds || 0) + ' Runden' + (s.modeC.partialReps ? ' + ' + s.modeC.partialReps + ' Übungen' : ''))
+      : gymLabel(s.gymId) + ' · ' + (EQUIPMENT_MODES.find(m => m.id === s.equipment) || {}).label + (s.finishedEarly ? ' · vorzeitig beendet' : ''),
+    body: (s.mode === 'C' && s.modeC
+      ? '<div class="card pad-s"><div class="kicker">' + esc(s.modeC.type === 'emom' ? 'EMOM' : 'AMRAP') + '</div>' +
+        '<div class="card-title">' + (s.modeC.completedRounds || 0) + ' Runden' +
+        (s.modeC.partialReps ? ' + ' + s.modeC.partialReps + ' Übungen' : '') + '</div>' +
+        '<div class="card-sub">' + esc(fmtSecs(s.modeC.elapsed || 0)) + '</div>' +
+        '<div class="list mt">' + (s.modeC.exIds || []).map((id, i) => {
+          const target = (s.modeC.perEx && s.modeC.perEx[id]) ? s.modeC.perEx[id] : {};
+          const slot = s.slots.find(sl => sl.exerciseId === id);
+          const actual = slot ? slot.sets.filter(st => st.done).map(st => (typeof st.w === 'number' ? fmtNum(st.w) + ' kg × ' : '') + st.r + ' Wdh.') : [];
+          return '<div class="list-item"><div class="li-main"><div class="li-name">' + (i + 1) + '. ' + esc(exerciseName(id)) + '</div>' +
+            '<div class="li-meta">Ziel: ' + (typeof target.w === 'number' ? fmtNum(target.w) + ' kg × ' : '') + (typeof target.reps === 'number' ? target.reps : '?') + ' Wdh.</div>' +
+            '<div class="li-meta">Ist: ' + esc(actual.length ? actual.join(' · ') : '—') + '</div></div></div>';
+        }).join('') + '</div></div>'
+      : '') +
+      '<div class="list mt">' + s.slots.map(sl => {
       if (sl.skipped) {
         /* §32.6 grau/deaktiviert, Label „übersprungen", ohne Werte */
         return '<div class="list-item is-skipped">' +
@@ -308,10 +331,13 @@ onAct('session.detail', d => {
             fmtSecs(x.sec || 0) + (x.dist ? ' · ' + fmtMeters(x.dist) : '')).join('  |  ')) + '</div></div>' +
           '<div class="li-right">' + esc(fmtSecs(secs)) + '</div></div>';
       }
+      const variant = (store.exerciseVariants || []).find(v => v.id === sl.variantId);
       return '<div class="list-item">' +
         '<div class="li-main"><div class="li-name">' + esc(exerciseName(sl.exerciseId)) + '</div>' +
-        '<div class="li-meta">' + sets.map(x =>
-          (x.w === null || x.w === undefined ? 'KG' : fmtNum(x.w)) + '×' + x.r).join('  ·  ') + '</div></div>' +
+        (variant ? '<div class="li-meta">' + esc(variant.name) + '</div>' : '') +
+        '<div class="li-meta">' + esc(sets.map(x =>
+          (x.w === null || x.w === undefined ? 'KG' : fmtNum(x.w)) + '×' + x.r +
+          (x.note ? ' · Notiz: ' + x.note : '')).join('  ·  ')) + '</div></div>' +
         '<div class="li-right">' + sets.length + ' von ' + Math.max(sl.targetSets || 0, sets.length) + ' Sätzen</div></div>';
     }).join('') + '</div>'
   });
@@ -343,6 +369,12 @@ function renderExerciseDetail(exId) {
       esc(fmtKg(p.best_1rm === undefined ? null : p.best_1rm)) + '</div></div>' +
   '</div>';
 
+  html += '<div class="stack mt">' +
+    exerciseMiniChart(exId, 'weight', 'Gewichtsverlauf', scopeKey) +
+    exerciseMiniChart(exId, 'reps', 'Wiederholungsverlauf', scopeKey) +
+    exerciseMiniChart(exId, 'volume', 'Volumenverlauf', scopeKey) +
+  '</div>';
+
   /* Aufschlüsselung je Geltungsbereich (Gym, Hantel, Calisthenics) */
   if (scopes.length) {
     html += kicker(scopeKey === null ? 'Aufschlüsselung je Bereich' : 'Auch in anderen Bereichen');
@@ -354,7 +386,8 @@ function renderExerciseDetail(exId) {
           (b.best_weight !== null ? 'Best ' + fmtKg(b.best_weight) : 'Best —') + ' · ' +
           (b.max_reps !== null ? b.max_reps + ' Wdh.' : '— Wdh.') + '</div></div>' +
         '<div class="li-right">' + esc(b.best_1rm !== null ? fmtKg(b.best_1rm) : '—') +
-          '<br><span class="tiny">1RM</span></div></div>';
+          '<br><span class="tiny">1RM</span></div>' +
+        '<button class="icon-btn sm" data-act="pr.deleteScope" data-id="' + esc(exId) + '" data-scope="' + esc(sc) + '" title="Diesen Bereich löschen" aria-label="Diesen Bereich löschen">✕</button></div>';
     }).join('') + '</div>';
   }
 
@@ -363,10 +396,15 @@ function renderExerciseDetail(exId) {
   const wKeys = Object.keys(byW).sort((a, b) => parseFloat(b) - parseFloat(a));
   if (wKeys.length) {
     html += kicker('Beste Wiederholungen je Last');
-    html += '<div class="list">' + wKeys.slice(0, 8).map(k =>
-      '<div class="list-item"><div class="li-main"><div class="li-name">' + esc(fmtKg(parseFloat(k))) + '</div></div>' +
-      '<div class="li-right">' + byW[k] + ' Wdh.</div></div>').join('') + '</div>';
+    html += '<div class="list">' + wKeys.slice(0, 8).map(k => {
+      const origin = prRepOriginLabel(exId, k, scopeKey);
+      return '<div class="list-item"><div class="li-main">' +
+        '<div class="li-name">' + esc(fmtKg(parseFloat(k))) + '</div>' +
+        (origin ? '<div class="li-meta">' + esc(origin) + '</div>' : '') +
+        '</div><div class="li-right">' + byW[k] + ' Wdh.</div></div>';
+    }).join('') + '</div>';
   }
+
 
   html += kicker('Verlauf');
   if (!hist.length) {
@@ -397,7 +435,107 @@ function renderExerciseDetail(exId) {
   return html;
 }
 
+onAct('pr.deleteScope', d => {
+  const exId = d.id;
+  const scope = d.scope;
+  confirmSheet({
+    title: 'Bereich löschen',
+    text: 'Die PR-Aufschlüsselung für „' + scopeLabel(scope) + '" wird bei „' + exerciseName(exId) + '" gelöscht. Alle anderen Bereiche bleiben erhalten.',
+    okLabel: 'Bereich löschen'
+  }, () => {
+    if (store.prs[scope]) delete store.prs[scope][exId];
+    saveStore();
+    render();
+  });
+});
+
 /* Beste Wiederholungen je Last über alle Bereiche zusammengefasst */
+function prRepOriginLabel(exId, weightKey, scopeKey) {
+  if (scopeKey !== null) {
+    const origin = scopeLabel(scopeKey);
+    const variants = (store.exerciseVariants || []).filter(v => v.gymId === scopeKey && v.exerciseId === exId).map(v => v.name);
+    return variants.length ? origin + ' · ' + variants.join(', ') : origin;
+  }
+
+  const reps = prScopesForExercise(exId).map(sc => {
+    const bucket = (store.prs[sc] || {})[exId] || {};
+    return { scope: sc, reps: bucket.prByWeight ? bucket.prByWeight[weightKey] : null };
+  }).filter(x => typeof x.reps === 'number');
+  const maxReps = Math.max.apply(null, reps.map(x => x.reps));
+  const origins = reps.filter(x => x.reps === maxReps).map(x => {
+    const base = scopeLabel(x.scope);
+    const variants = (store.exerciseVariants || []).filter(v => v.gymId === x.scope && v.exerciseId === exId).map(v => v.name);
+    return variants.length ? base + ' · ' + variants.join(', ') : base;
+  });
+  return origins.filter((v, i) => origins.indexOf(v) === i).join(' · ');
+}
+
+function exerciseTrendSeries(exId, metric, scopeKey) {
+  const series = [];
+  historyFor(exId).slice().reverse().forEach(h => {
+    if (scopeKey !== null && h.scope !== scopeKey) return;
+    if (!h.sets || !h.sets.length) return;
+    let value = 0;
+    if (metric === 'weight') value = Math.max.apply(null, h.sets.map(s => typeof s.w === 'number' ? s.w : 0));
+    if (metric === 'reps') value = Math.max.apply(null, h.sets.map(s => typeof s.r === 'number' ? s.r : 0));
+    if (metric === 'volume') h.sets.forEach(s => { value += (typeof s.w === 'number' ? s.w : 0) * (typeof s.r === 'number' ? s.r : 0); });
+    if (value > 0) series.push({ dateISO: h.dateISO, value: value });
+  });
+  return series;
+}
+
+function exerciseMiniChart(exId, metric, title, scopeKey) {
+  const series = exerciseTrendSeries(exId, metric, scopeKey);
+  if (!series.length) return '<div class="card pad-s"><div class="kicker">' + esc(title) + '</div><div class="empty">Noch keine Daten.</div></div>';
+  const W = 320, H = 130, padL = 8, padR = 8, padT = 12, padB = 22;
+  const maxV = Math.max.apply(null, series.map(p => p.value)) || 1;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const x = i => padL + (series.length === 1 ? iw / 2 : i * iw / (series.length - 1));
+  const y = v => padT + ih - v / maxV * ih;
+  const line = series.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.value).toFixed(1)).join(' ');
+  const dots = series.map((p, i) => '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(p.value).toFixed(1) + '" r="2.5" fill="#D7FF3B"/>').join('');
+  const unit = metric === 'weight' ? ' kg' : (metric === 'volume' ? ' kg×Wdh.' : ' Wdh.');
+  return '<div class="card pad-s"><div class="kicker">' + esc(title) + '</div>' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(title) + '">' +
+      '<line x1="' + padL + '" y1="' + (padT + ih) + '" x2="' + (W - padR) + '" y2="' + (padT + ih) + '" stroke="#2A2A2C"/>' +
+      '<path d="' + line + '" fill="none" stroke="#D7FF3B" stroke-width="2"/>' + dots +
+      '<text x="' + padL + '" y="' + (H - 6) + '" fill="#8A8A8E" font-size="9">' + esc(fmtDateDE(series[0].dateISO)) + '</text>' +
+      '<text x="' + (W - padR) + '" y="' + (H - 6) + '" fill="#8A8A8E" font-size="9" text-anchor="end">' + esc(fmtNum(series[series.length - 1].value) + unit) + '</text>' +
+    '</svg></div>';
+}
+
+function exerciseTrendSeries(exId, metric, scopeKey) {
+  const series = [];
+  historyFor(exId).slice().reverse().forEach(h => {
+    if (scopeKey !== null && h.scope !== scopeKey) return;
+    if (!h.sets || !h.sets.length) return;
+    let value = 0;
+    if (metric === 'weight') value = Math.max.apply(null, h.sets.map(s => typeof s.w === 'number' ? s.w : 0));
+    if (metric === 'reps') value = Math.max.apply(null, h.sets.map(s => typeof s.r === 'number' ? s.r : 0));
+    if (metric === 'volume') h.sets.forEach(s => { value += (typeof s.w === 'number' ? s.w : 0) * (typeof s.r === 'number' ? s.r : 0); });
+    if (value > 0) series.push({ dateISO: h.dateISO, value: value });
+  });
+  return series;
+}
+function exerciseMiniChart(exId, metric, title, scopeKey) {
+  const series = exerciseTrendSeries(exId, metric, scopeKey);
+  if (!series.length) return '<div class="card pad-s"><div class="kicker">' + esc(title) + '</div><div class="empty">Noch keine Daten.</div></div>';
+  const W = 320, H = 130, padL = 8, padR = 8, padT = 12, padB = 22;
+  const maxV = Math.max.apply(null, series.map(p => p.value)) || 1;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const x = i => padL + (series.length === 1 ? iw / 2 : i * iw / (series.length - 1));
+  const y = v => padT + ih - v / maxV * ih;
+  const line = series.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.value).toFixed(1)).join(' ');
+  const dots = series.map((p, i) => '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(p.value).toFixed(1) + '" r="2.5" fill="#D7FF3B"/>').join('');
+  const unit = metric === 'weight' ? ' kg' : (metric === 'volume' ? ' kg×Wdh.' : ' Wdh.');
+  return '<div class="card pad-s"><div class="kicker">' + esc(title) + '</div><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(title) + '">' +
+    '<line x1="' + padL + '" y1="' + (padT + ih) + '" x2="' + (W - padR) + '" y2="' + (padT + ih) + '" stroke="#2A2A2C"/>' +
+    '<path d="' + line + '" fill="none" stroke="#D7FF3B" stroke-width="2"/>' + dots +
+    '<text x="' + padL + '" y="' + (H - 6) + '" fill="#8A8A8E" font-size="9">' + esc(fmtDateDE(series[0].dateISO)) + '</text>' +
+    '<text x="' + (W - padR) + '" y="' + (H - 6) + '" fill="#8A8A8E" font-size="9" text-anchor="end">' + esc(fmtNum(series[series.length - 1].value) + unit) + '</text>' +
+  '</svg></div>';
+}
+
 function mergedPrByWeight(exId) {
   const out = {};
   prScopesForExercise(exId).forEach(sc => {

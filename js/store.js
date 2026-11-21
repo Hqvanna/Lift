@@ -42,12 +42,17 @@ function defaultStore() {
     equipmentMode: 'studio',
     customGyms: [],
     customExercises: [],
+    exerciseVariants: [],
+    activeExerciseVariants: {},
+    customFixedPlans: {},
+    namedTrainingPlans: [],
     slotOverrides: {},
     painFlags: {},
     prs: {},
     sessions: [],
     swapLog: [],
     plateauStreak: {},
+    exerciseRepTargets: {},
     plateauMode: {},
     plateauDismissed: {},
     autoSwapAsked: {},
@@ -88,10 +93,35 @@ function migrateStore(raw) {
   if (s.errorLog.length > 5) s.errorLog = s.errorLog.slice(-5);
 
   /* Objekte */
-  ['slotOverrides', 'painFlags', 'prs', 'plateauStreak', 'plateauMode',
-   'plateauDismissed', 'autoSwapAsked', 'conditioningRecords'].forEach(k => {
+  ['slotOverrides', 'painFlags', 'prs', 'plateauStreak', 'exerciseRepTargets', 'plateauMode',
+   'plateauDismissed', 'autoSwapAsked', 'conditioningRecords', 'customFixedPlans'].forEach(k => {
     if (!isObj(s[k])) s[k] = {};
   });
+
+  /* Varianten pro Stammübung und Gym absichern */
+  if (!Array.isArray(s.exerciseVariants)) s.exerciseVariants = [];
+  s.exerciseVariants = s.exerciseVariants.filter(isObj).map(v => ({
+    id: typeof v.id === 'string' && v.id ? v.id : uid('ev'),
+    gymId: typeof v.gymId === 'string' ? v.gymId : s.gymId,
+    exerciseId: typeof v.exerciseId === 'string' ? v.exerciseId : '',
+    name: typeof v.name === 'string' ? v.name.trim() : ''
+  })).filter(v => v.exerciseId && v.name);
+  if (!isObj(s.activeExerciseVariants)) s.activeExerciseVariants = {};
+  if (!Array.isArray(s.namedTrainingPlans)) s.namedTrainingPlans = [];
+  s.namedTrainingPlans = s.namedTrainingPlans.filter(isObj).map(p => ({
+    id: typeof p.id === 'string' && p.id ? p.id : uid('plan'),
+    name: typeof p.name === 'string' && p.name.trim() ? p.name.trim() : 'Unbenanntes Training',
+    slots: Array.isArray(p.slots) ? p.slots.filter(isObj).map((slot, i) => ({
+      slotKey: typeof slot.slotKey === 'string' ? slot.slotKey : 'plan_s' + (i + 1),
+      exerciseId: typeof slot.exerciseId === 'string' ? slot.exerciseId : '',
+      name: typeof slot.name === 'string' ? slot.name : 'Übung',
+      category: CATEGORIES[slot.category] ? slot.category : 'abs',
+      sets: Math.min(12, Math.max(1, typeof slot.sets === 'number' ? parseInt(slot.sets, 10) : 3)),
+      reps: typeof slot.reps === 'string' ? slot.reps : '8–12',
+      rest: Math.min(600, Math.max(0, typeof slot.rest === 'number' ? parseInt(slot.rest, 10) : 90))
+    })) : [],
+    updatedAt: typeof p.updatedAt === 'number' ? p.updatedAt : nowTs()
+  }));
 
   /* Wildcard-Vorlagen absichern */
   if (!Array.isArray(s.wildcardTemplates)) s.wildcardTemplates = [];
@@ -231,6 +261,7 @@ function normalizeSession(sess) {
   sess.slots.forEach(slot => {
     if (typeof slot.slotKey !== 'string' || !slot.slotKey) slot.slotKey = uid('sk');
     if (typeof slot.exerciseId !== 'string') slot.exerciseId = '';
+    if (typeof slot.variantId !== 'string') slot.variantId = null;
     if (typeof slot.originalExerciseId !== 'string') slot.originalExerciseId = slot.exerciseId;
     if (!CATEGORIES[slot.category]) {
       const ex = getExercise(slot.exerciseId);
